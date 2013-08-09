@@ -1,0 +1,338 @@
+=head1 TITLE
+
+Toward Catalyst Restfullness - Improving Catalyst use for web services
+
+=head1 SUMMARY
+
+This is a document which outlines a full proposal of achievable development
+goals that would improve Catalyst for web service development.  It also reviews
+the deficiencies in existing strategies and outlines the reasons for why we
+believe such features belong in Catalyst core.  We will also note limitations
+to our outlined approach.
+
+=head1 Web Services and Catalyst
+
+Catalyst is a superb web development framework which has demonstrated itself
+via many successful projects.  However, when it was originally designed the
+domanent use for web frameworks was to hook a database (or similar data store)
+to the internet via HTML and server side generated web pages (typically using a
+server side templating system such as Template Toolkit or Mason).  Javascript
+and client side (in browser) programming was usually limited to progressive
+enhancement effects.  There was very little use case for server to client 
+communication initiated via Javascript on the clientside.  In addition, the
+market for web services (exposing one's business logic API or data endpoints
+via HTTP, using SOAP, XML/JSON-RPC or similar) was limited.
+
+As a result, the design of Catalyst stressed features of use to development of
+the domanent use cases of the time.  Although the community eventually offered
+some support for RESTful and AJAX use cases via non core addins, those suffered
+from issues regarding how they handle content negotiation and since they were
+project add ins, were not able to fully take advantage of deep integration.
+
+Since contemporary web development has many use cases for RESTful style API
+and AJAX, it makes sense for Catalyst to offer some minimal level of built in
+support, such that newcomers to the framework would get a base amount of 
+features that could be counted on.  In addition, this base support could be
+improved upon via framework extensions such that the community could continue
+the conversation at a higher level.
+
+=head1 SCOPE
+
+The scope of this project is to improve the baseline support for the most
+common use cases web developers encounter requiring support for lightweight
+web services.  Typically this involves exposing some data via JSON for
+consumption in a web brower, when a front end developer is adding web page
+interactive features, or even building 'one page javascript apps' as is becoming
+a more common use case.  Additionally we'd like to enable programmers to have
+a common approach to building more complex web services whose typical use case
+is providing data endpoints for applications beyond client side web pages.  Case
+could include support for mobile apps (such as Android or iPhone apps), server
+to server communications (for build software as a service systems, or for data
+exchange with external partners) and situations where an architecture is 
+heterogenous and web services offers a possible integration approach.
+
+Out of scope is to include all the features required to build fully REST
+compliant web services (although one could fairly say building the additional
+required pieces would just require the coding commitment as Catalyst already
+exposes enough API to fill in the missing peices on your own).
+
+=head1 The Application Class - Proposed changes
+
+We would add the follow API
+
+=head2 HTTP Request Body Data Handling
+
+The core Catalyst application class would get some additional API so that we
+could register handlers for incoming HTTP body data beyond the existing 'classic'
+HTML forms and file upload.  The core class would do no parsing of its own, but
+rather 'register' and offer these parsers to a requesting class.  A user would
+configure this via Catalyst configuration (although API will be documented, it
+will not be considered proper for public use.  Here's the proposed example:
+
+    package MyApp::Web;
+
+    use Catalyst;
+    use JSON;
+
+    __PACKAGE__->config(
+      "Catalyst::BodyDataParsers" => {
+        'application/json' => sub { JSON::decode $_ }
+      },
+    );
+
+We defined a new top level configuration key called C<Catalyst::BodyDataParsers>
+whose value MUST be a Hashref, which itself contains a keys (which matches a
+particular incoming body MIME type) and coderefs ( handlers that receive the
+flattened body content as a string and are expected to return a Perl data
+reference).
+
+A key may contain regular expressions since it will be matched against the
+request content type in regular expression context.  This is to enable
+situations where more than one content type is mapped to the same parser.  For
+example:
+
+    __PACKAGE__->config(
+      "Catalyst::BodyDataParsers" => {
+        'application/(?:vnd.+)?json' => sub { JSON::decode $_ }
+      },
+    );
+
+Would allow you to match "application/vnd.mycompany.user+json", which is not an
+uncommon approach to user defined content types.
+
+A value must be a coderef, which is evaluated with C<$_> localized to the string
+form of the request content.  You should use C<$_> since we currently do not 
+document the meanings of @_ in this context.  The return value is expected to be
+a Perl reference.
+
+For the first version, we consider parsing body input streams, or iterative
+parsing of large sized incoming request bodies, to be out of scope.
+
+L<Catalyst> will come bundled with the following built in body parsers:
+
+    application/(?:vnd.+)?json
+    application/x-www-form-urlencoded
+    application/octet
+
+Although you may of course overide the built-in settings in local configuration.
+
+For JSON, Catalyst will use L<JSON::PP> unless L<JSON> is found to be installed
+(if you want the XS based parser, you should include it in your application
+Makefile.PL).  For Form data, this will incorporate the features of
+L<Catalyst::Plugin::Params::Nested> as to better support how common clientside
+Javascript frameworks attempt to encode complex incoming data.  Please note
+that in some cases this could lead to 'double parsing' of the request body, so
+it is recommended that if you plan to make use of this feature, to enable the
+L<Catalyst> global configuration C<parse_on_demand>, which defers all request
+content parsing until its requested.  Regardless of the configuration setting,
+the data parsers should always try to do the most optimal this (reading from
+$psgi_env->{input} or $request->body as given the current state of things).  See
+Request object below.
+
+C<application/octet> parsing will return a filehandle like object, similar to
+how the current approach using L<HTTP::Body> works.
+
+Multipart content is considered out of scope for this iteration (but we do note
+that support for this already does exist in Catalyst).
+
+=head3 Handling errors in the decode or parsing stage
+
+For this first version, errors are propogated upwards.  We do not attempt to
+set any response statuses.  
+
+=head2 Response Body encoding and negotiation
+
+The following describes the proposed approach to enable Catalyst to automate
+some types of response body encoding.  The current scope for this proposal
+does not include methods to support streaming and evented / non blocking
+interfaces.
+
+In traditional L<Catalyst> Applications, one either sets the request body
+to a string with is assumed to be encoded according to the header content type
+or a filehandle, which allows one way to stream a response.
+
+We will add the ability to set the response body as a reference either to an
+array ref or a hashref.  A reference value like this will be an indicator to
+L<Catalyst> that the body value must be encoded via one of the globally
+defined body format handlers (see below).  For example:
+
+    package MyApp::Web::Controller::User;
+
+    use base 'Catalyst::Controller';
+
+    sub myaction :Local {
+      my ($self, $ctx) = @_;
+      $ctx->res->content_type('application/json');
+      $ctx->res->body( { a => 1, b => 2 });
+    }
+
+    1;
+
+We propose allowing one to establish body 'format' handlers, as well as the
+establishment of several common built in formaters. Here's the proposed example:
+
+    package MyApp::Web;
+
+    use Catalyst;
+    use JSON;
+
+    __PACKAGE__->config(
+      "Catalyst::BodyFormatHandlers" => {
+        'application/json' => sub { JSON::encode $_ }
+      },
+    );
+
+This works similarly to the produced body data decoders, in that we allow for
+a new top level configuration key that takes a hash ref, whose keys are 
+strings indicating a content type (or a regular expression to a content type)
+and whos values are a subroutine ref that receive the reference value placed
+in the response body localized to C<$_>.
+
+Matching a reference body value to a format handler will take place by inspecting
+the response content type.  If no content type is set for the response AND the
+configuration value C<alway_do_global_content_negotiation> is true (it is false
+by default) then we will use standard content negotiation, inspecting the Request
+and choosing the best matching formatter. If not formater matches, this will raise
+a yet to be determined error.
+
+L<Catalyst> will come bundled with the following built in body formatters:
+
+    application/(?:vnd.+)?json
+    application/x-www-form-urlencoded
+
+As with the data parsers, we bundle L<JSON:PP> but use a faster, XS based parser
+if one is already installed and available.
+
+=head1 Request Object API - Proposed changes
+
+The following new API is proposed
+
+=head2 accepts
+
+Given a list of one or more MIME types, examine the incoming request ACCEPTS
+HTTP header and return the one that is the best match using standard techniques
+for content negotiation
+
+=head2 accepts_language
+
+=head2 accepts_charsets
+
+Works like L</accepts> except it examines the HTTP language and charset accepts.
+
+=head2 is_xhr
+
+Check if the request was issued with the "X-Requested-With" header field set to
+"XMLHttpRequest" (jQuery etc).
+
+=head2 looks_like_browser
+
+returns true if the request appears to originate from a web browser
+
+=head2 body_data
+
+When called, it will try to parse the request body, if any exists by comparing
+the request content type to the registered body parsers (defined in the previous
+section).  Depending on the status of C<parse_on_demand> it will either read
+from $psgi_env->{input} or the previous read value in $c->request->body.
+
+This is allowed to be undefined in the case where there is not body content.
+
+=head1 Request Object API - Proposed changes
+
+The following new API is proposed
+
+=head2 body
+
+This method will now accept an array or hash reference, which is later
+formatted via an encoded defined and indicated by the existing set http
+content type header, or via standard content negotiation if the global
+configuration C<alway_do_global_content_negotiation> is true.
+
+=head2 format
+
+Allows one to indicate the response body can be one of several content types
+which should be choosen using standard content negotiations techniques.  For
+example:
+
+    package MyApp::Web::Controller::User;
+
+    use base 'Catalyst::Controller';
+
+    sub example :Local {
+      my ($self, $ctx) = @_;
+
+      $ctx->response->format(
+        'application/json' => sub { +{ a=>1, b=>2 }},
+        'text/xml' => sub { ... },
+      );
+    }
+    
+    1;
+
+The format method takes a hash, where the key is a content type being formated
+(the response content type is set to this, and it may not be a regular expression
+it must be a real content type) and the value is a sub ref whose value is stored
+in the response body.
+
+Arguments for the subref have not yet been defined.
+
+This approach also will set the reponse http accept header based on the allowed
+formats.
+
+The main use case for this approach is more compact control when you wish to
+vary the actual content based on the content type.
+
+=head2 from_psgi
+
+Given a valid psgi response (either tuple or delayed coderef), set the LCatalyst)
+response accordingly.
+
+=head1 New Controller action attributes
+
+We defined the two new Controller attributes to assist in controlling which
+actions handle the request
+
+=head2 Provides
+
+    package MyApp::Web::Controller::User;
+
+    use base 'Catalyst::Controller';
+
+    sub example :Local Provides('application/json') {
+      my ($self, $ctx) = @_;
+    }
+    
+    1;
+
+Indicates the the action, or following action chain, can provide the specified
+content.  We should inspect the request HTTP Accept to make sure that the client
+that initatiated the request is willing to accept this content type.  An action
+may indicate more than one C<Provides>.
+
+Please not that it is not in scope for this iteration to make the Provides 
+subroutine attribute conform to standard content negotiation rules.  We just
+follow the standard Catalyst, the first and best match just wins.
+
+=head2 Consumes
+
+    package MyApp::Web::Controller::User;
+
+    use base 'Catalyst::Controller';
+
+    sub example :Local Consumes('application/json') {
+      my ($self, $ctx) = @_;
+    }
+    
+    1;
+
+Indicates that the action, or following action chain is willing to process 
+certain request content types (or list of content types).
+
+We check the request content type fo a match.  This value is allowed to be
+a string that is formatted as a regular expression.
+
+Please not that it is not in scope for this iteration to make the Consumes 
+subroutine attribute conform to standard content negotiation rules.  We just
+follow the standard Catalyst, the first and best match just wins.
+
+=cut
