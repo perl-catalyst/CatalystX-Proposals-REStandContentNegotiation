@@ -118,6 +118,13 @@ how the current approach using L<HTTP::Body> works.
 Multipart content is considered out of scope for this iteration (but we do note
 that support for this already does exist in Catalyst).
 
+When matching an incoming request to a body parser, we will chose the correct
+parser using a 'best match' algorithm similiar to
+
+L<HTTP::Headers::ActionPack::ContentNegotiation> method C<choose_media_type>
+
+That way you can set quality and standard mime type pattern matching.
+
 =head3 Handling errors in the decode or parsing stage
 
 For this first version, errors are propogated upwards.  We do not attempt to
