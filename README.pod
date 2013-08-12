@@ -14,7 +14,7 @@ to our outlined approach.
 
 Catalyst is a superb web development framework which has demonstrated itself
 via many successful projects.  However, when it was originally designed the
-domanent use for web frameworks was to hook a database (or similar data store)
+dominant use for web frameworks was to hook a database (or similar data store)
 to the internet via HTML and server side generated web pages (typically using a
 server side templating system such as Template Toolkit or Mason).  Javascript
 and client side (in browser) programming was usually limited to progressive
@@ -24,10 +24,7 @@ market for web services (exposing one's business logic API or data endpoints
 via HTTP, using SOAP, XML/JSON-RPC or similar) was limited.
 
 As a result, the design of Catalyst stressed features of use to development of
-the domanent use cases of the time.  Although the community eventually offered
-some support for RESTful and AJAX use cases via non core addins, those suffered
-from issues regarding how they handle content negotiation and since they were
-project add ins, were not able to fully take advantage of deep integration.
+the primary use cases of the time.
 
 Since contemporary web development has many use cases for RESTful style API
 and AJAX, it makes sense for Catalyst to offer some minimal level of built in
@@ -75,32 +72,18 @@ will not be considered proper for public use.  Here's the proposed example:
     use JSON;
 
     __PACKAGE__->config(
-      "Catalyst::BodyDataParsers" => {
+      'body_data_parsers' => {
         'application/json' => sub { JSON::decode $_ }
       },
     );
 
-We defined a new top level configuration key called C<Catalyst::BodyDataParsers>
+We defined a new top level configuration key called C<body_data_parsers>
 whose value MUST be a Hashref, which itself contains a keys (which matches a
 particular incoming body MIME type) and coderefs ( handlers that receive the
 flattened body content as a string and are expected to return a Perl data
 reference).
 
-A key may contain regular expressions since it will be matched against the
-request content type in regular expression context.  This is to enable
-situations where more than one content type is mapped to the same parser.  For
-example:
-
-    __PACKAGE__->config(
-      "Catalyst::BodyDataParsers" => {
-        'application/(?:vnd.+)?json' => sub { JSON::decode $_ }
-      },
-    );
-
-Would allow you to match "application/vnd.mycompany.user+json", which is not an
-uncommon approach to user defined content types.
-
-A value must be a coderef, which is evaluated with C<$_> localized to the string
+The value coderef is evaluated with C<$_> localized to the string
 form of the request content.  You should use C<$_> since we currently do not 
 document the meanings of @_ in this context.  The return value is expected to be
 a Perl reference.
@@ -110,7 +93,7 @@ parsing of large sized incoming request bodies, to be out of scope.
 
 L<Catalyst> will come bundled with the following built in body parsers:
 
-    application/(?:vnd.+)?json
+    application/json
     application/x-www-form-urlencoded
     application/octet
 
@@ -177,7 +160,7 @@ establishment of several common built in formaters. Here's the proposed example:
     use JSON;
 
     __PACKAGE__->config(
-      "Catalyst::BodyFormatHandlers" => {
+      'body_data_formatters' => {
         'application/json' => sub { JSON::encode $_ }
       },
     );
@@ -197,7 +180,7 @@ a yet to be determined error.
 
 L<Catalyst> will come bundled with the following built in body formatters:
 
-    application/(?:vnd.+)?json
+    application/json
     application/x-www-form-urlencoded
 
 As with the data parsers, we bundle L<JSON:PP> but use a faster, XS based parser
@@ -334,5 +317,15 @@ a string that is formatted as a regular expression.
 Please not that it is not in scope for this iteration to make the Consumes 
 subroutine attribute conform to standard content negotiation rules.  We just
 follow the standard Catalyst, the first and best match just wins.
+
+=head1 CHANGES
+
+12 August 2013
+
+    - Configuration key names changed to match existing Catalyst standards
+    - Body parsers can no longer match request content types using regular
+      expressions since this vastly complicates how to merge configurations
+      and possible is more fine grained for the global object.
+    - misc. spelling and grammer fixes
 
 =cut
